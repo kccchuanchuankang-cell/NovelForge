@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.api.endpoints import ai, cards, llm_configs, projects, prompts
+from app.api.endpoints import auth, ai, cards, llm_configs, projects, prompts
 from app.api.endpoints import assistant as assistant_ep
 from app.api.endpoints import context as context_ep
 from app.api.endpoints import foreshadow as foreshadow_ep
@@ -11,6 +11,7 @@ from app.api.endpoints import workflows as workflows_ep
 
 
 api_router = APIRouter()
+api_router.include_router(auth.router, prefix="/auth", tags=["auth"])
 api_router.include_router(projects.router, prefix="/projects", tags=["projects"])
 api_router.include_router(llm_configs.router, prefix="/llm-configs", tags=["llm-configs"])
 

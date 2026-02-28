@@ -62,6 +62,10 @@ app = FastAPI(
 from app.core.middleware.workflow import WorkflowHeaderMiddleware
 app.add_middleware(WorkflowHeaderMiddleware)
 
+# 注册认证中间件 (在 CORS 之前)
+from app.core.middleware.auth import AuthMiddleware
+app.add_middleware(AuthMiddleware)
+
 # 设置CORS中间件
 app.add_middleware(
     CORSMiddleware,

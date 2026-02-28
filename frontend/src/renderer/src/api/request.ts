@@ -45,6 +45,12 @@ class HttpClient {
 
     this.instance.interceptors.request.use(
       (config) => {
+        // 自动注入 Token
+        const token = localStorage.getItem("novelforge_token")
+        if (token) {
+          config.headers.Authorization = `Bearer ${token}`
+        }
+
         const showLoading = (config as any).showLoading !== false
         if (showLoading) {
           if (this.loadingCount === 0) {
@@ -107,6 +113,19 @@ class HttpClient {
             if (this.loadingCount === 0) this.loadingInstance?.close()
           } catch { }
         }
+
+        // 处理 401 未授权
+        if (error.response?.status === 401) {
+          localStorage.removeItem("novelforge_token")
+          // 只有在 Web 模式下才进行跳转（Electron 模式可能不需要或者有不同处理）
+          if (import.meta.env.VITE_APP_PLATFORM === 'web') {
+            // 避免在登录页时重复跳转
+            if (!window.location.hash.includes("/login") && !window.location.pathname.includes("/login")) {
+              window.location.href = "/#/login"
+            }
+          }
+        }
+
         if (error.response && error.response.status === 422) {
           const validationErrors = error.response.data.detail
           if (Array.isArray(validationErrors)) {

@@ -15,6 +15,7 @@ import { schemaService } from './api/schema'
 const IdeasHome = defineAsyncComponent(() => import('./views/IdeasHome.vue'))
 const CodeWorkflowEditor = defineAsyncComponent(() => import('./views/workflow/CodeWorkflowEditor.vue'))
 const WorkflowStatusBar = defineAsyncComponent(() => import('./components/workflow/WorkflowStatusBar.vue'))
+const LoginView = defineAsyncComponent(() => import('./views/Login.vue'))
 
 type Project = components['schemas']['ProjectRead']
 
@@ -23,7 +24,7 @@ const projectStore = useProjectStore()
 const updateStore = useUpdateStore()
 const workflowStore = useWorkflowStore()
 
-const { currentView, settingsDialogVisible } = storeToRefs(appStore)
+const { currentView, settingsDialogVisible, isAuthenticated } = storeToRefs(appStore)
 const { currentProject } = storeToRefs(projectStore)
 
 function handleProjectSelected(project: Project) {
@@ -46,12 +47,30 @@ function handleCloseSettings() {
 
 const isNoHeader = computed(() => {
   const h = window.location.hash || ''
-  return h.startsWith('#/ideas-home')
+  return h.startsWith('#/ideas-home') || currentView.value === 'login'
 })
 
 async function syncViewFromHash() {
   const hash = window.location.hash || ''
-  if (hash.startsWith('#/ideas-home')) {
+  
+  // 简易鉴权拦截
+  if (import.meta.env.VITE_APP_PLATFORM === 'web') {
+    if (!appStore.isAuthenticated && !hash.startsWith('#/login')) {
+      appStore.goToLogin()
+      window.location.hash = '#/login'
+      return
+    }
+    // 已登录状态访问登录页，自动跳转回首页
+    if (appStore.isAuthenticated && hash.startsWith('#/login')) {
+      appStore.goToDashboard()
+      window.location.hash = '#/'
+      return
+    }
+  }
+
+  if (hash.startsWith('#/login')) {
+    appStore.goToLogin()
+  } else if (hash.startsWith('#/ideas-home')) {
     appStore.goToIdeas()
     try { await projectStore.loadFreeProject() } catch {}
   }
@@ -66,8 +85,12 @@ async function syncViewFromHash() {
 // 初始化主题和加载全局资源
 onMounted(async () => {
   appStore.initTheme()
-  schemaService.loadSchemas() // Load all schemas on app startup
-  syncViewFromHash()
+  await syncViewFromHash() // 等待路由同步完成
+  
+  if (isAuthenticated.value) {
+    schemaService.loadSchemas() // 只有认证后才加载
+  }
+  
   window.addEventListener('hashchange', syncViewFromHash)
   
   // 设置工作流监听器（监听响应头中的 X-Workflows-Started）
@@ -98,14 +121,17 @@ onBeforeUnmount(() => {
   <div class="app-layout">
     <Header v-if="!isNoHeader" />
     <main class="main-content">
-      <Dashboard v-if="currentView === 'dashboard'" @project-selected="handleProjectSelected" />
-      <Editor
-        v-else-if="currentView === 'editor' && currentProject"
-        :initial-project="currentProject"
-        @back-to-dashboard="handleBackToDashboard"
-      />
-      <IdeasHome v-else-if="currentView === 'ideas'" />
-      <CodeWorkflowEditor v-else-if="currentView === 'workflows'" />
+      <template v-if="currentView !== 'login'">
+        <Dashboard v-if="currentView === 'dashboard'" @project-selected="handleProjectSelected" />
+        <Editor
+          v-else-if="currentView === 'editor' && currentProject"
+          :initial-project="currentProject"
+          @back-to-dashboard="handleBackToDashboard"
+        />
+        <IdeasHome v-else-if="currentView === 'ideas'" />
+        <CodeWorkflowEditor v-else-if="currentView === 'workflows'" />
+      </template>
+      <LoginView v-else />
     </main>
 
     <SettingsDialog 

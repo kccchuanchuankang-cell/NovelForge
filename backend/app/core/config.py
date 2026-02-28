@@ -122,6 +122,25 @@ class BootstrapSettings(BaseSettings):
         return str(self.overwrite).lower() in ('1', 'true', 'yes', 'on')
 
 
+class AdminSettings(BaseSettings):
+    """管理员认证配置"""
+    
+    # 管理员密码
+    admin_password: str = Field(default="novel_forge_admin_123", alias="ADMIN_PASSWORD")
+    
+    # JWT 签名密钥
+    secret_key: str = Field(default="novelforge_default_secret_key_change_me", alias="SECRET_KEY")
+    
+    # Token 有效期（小时）
+    token_expire_hours: int = Field(default=24*30, alias="TOKEN_EXPIRE_HOURS") # 默认30天
+    
+    class Config:
+        env_file = ".env"
+        env_file_encoding = "utf-8"
+        case_sensitive = False
+        extra = "ignore"
+
+
 class AISettings(BaseSettings):
     """AI相关配置"""
     
@@ -194,6 +213,7 @@ class Settings:
         self.bootstrap = BootstrapSettings()
         self.workflow = WorkflowSettings()
         self.app = AppSettings()
+        self.admin = AdminSettings()
     
     def __repr__(self) -> str:
         return (
