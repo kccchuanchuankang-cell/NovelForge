@@ -11,7 +11,8 @@ export default defineConfig({
   root: 'src/renderer',
   base: './',
   define: {
-    'import.meta.env.VITE_APP_VERSION': JSON.stringify(version)
+    'import.meta.env.VITE_APP_VERSION': JSON.stringify(version),
+    'import.meta.env.VITE_APP_PLATFORM': JSON.stringify('web')
   },
   resolve: {
     alias: {

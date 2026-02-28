@@ -15,13 +15,8 @@ export const BASE_URL: string = (() => {
       // 开发模式走 Vite 代理：/api -> http://127.0.0.1:8000
       return ''
     }
-    if (backendEnv) return backendEnv
-    if (typeof window !== 'undefined') {
-      const protocol = window.location.protocol || 'http:'
-      const hostname = window.location.hostname || '127.0.0.1'
-      return `${protocol}//${hostname}:8000`
-    }
-    return ''
+    // 生产环境：如果有环境变量则使用，否则默认使用相对路径（通过 Nginx 代理）
+    return backendEnv || ''
   }
 
   // Electron 等非 web 场景
