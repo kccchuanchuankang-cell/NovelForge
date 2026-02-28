@@ -33,7 +33,7 @@ services:
     restart: unless-stopped
 
   neo4j:
-    image: neo4j:5.16
+    image: neo4j:2026.01.4
     container_name: novelforge-neo4j
     ports:
       - "7474:7474" # HTTP
