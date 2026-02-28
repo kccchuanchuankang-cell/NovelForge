@@ -7,7 +7,7 @@ services:
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     volumes:
-      - ./backend/data:/app/data
+      - ${BACKEND_DATA_PATH:-./backend/data}:/app/data
     environment:
       - NOVELFORGE_DB_PATH=/app/data/novelforge.db
       - KNOWLEDGE_GRAPH_PROVIDER=${KNOWLEDGE_GRAPH_PROVIDER:-neo4j}
