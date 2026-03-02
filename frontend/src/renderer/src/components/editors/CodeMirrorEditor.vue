@@ -108,7 +108,7 @@
 	</div>
 
 	<div class="editor-content-wrapper">
-		<!-- 简化的标题区域 -->
+		<!-- 标题区域 -->
 	<div class="chapter-header">
 		<div class="title-section">
 			<h1 
@@ -127,6 +127,13 @@
 
 		<!-- CodeMirror 容器 -->
 		<div ref="cmRoot" class="editor-content"></div>
+		<div v-if="pendingAiEdit && !pendingAiEdit.generating" class="ai-replace-review-bar">
+			<span class="review-hint">已生成替换建议：灰色为原文，蓝色为新文本</span>
+			<div class="review-actions">
+				<el-button type="primary" size="small" @click="acceptPendingAiEdit">接受并替换</el-button>
+				<el-button size="small" @click="rejectPendingAiEdit">拒绝并还原</el-button>
+			</div>
+		</div>
 	</div>
 
 		<!-- 右键快速编辑菜单 -->
@@ -289,7 +296,12 @@ const titleElement = ref<HTMLElement | null>(null)
 let view: EditorView | null = null
 
 // 自定义高亮系统
-const setHighlightEffect = StateEffect.define<{ from: number; to: number } | null>()
+type HighlightEffectPayload =
+	| { mode: 'single'; from: number; to: number }
+	| { mode: 'compare'; originalFrom: number; originalTo: number; previewFrom: number; previewTo: number }
+	| null
+
+const setHighlightEffect = StateEffect.define<HighlightEffectPayload>()
 
 const highlightField = StateField.define<DecorationSet>({
 	create() {
@@ -301,11 +313,19 @@ const highlightField = StateField.define<DecorationSet>({
 			if (effect.is(setHighlightEffect)) {
 				if (effect.value === null) {
 					highlights = Decoration.none
-				} else {
+				} else if (effect.value.mode === 'single') {
 					const decoration = Decoration.mark({
 						class: 'cm-ai-highlight'
 					}).range(effect.value.from, effect.value.to)
 					highlights = Decoration.set([decoration])
+				} else {
+					const originalDecoration = Decoration.mark({
+						class: 'cm-ai-original-highlight'
+					}).range(effect.value.originalFrom, effect.value.originalTo)
+					const previewDecoration = Decoration.mark({
+						class: 'cm-ai-preview-highlight'
+					}).range(effect.value.previewFrom, effect.value.previewTo)
+					highlights = Decoration.set([originalDecoration, previewDecoration])
 				}
 			}
 		}
@@ -487,8 +507,37 @@ const contextMenu = reactive({
 	selectedText: null as { text: string; from: number; to: number } | null
 })
 
+const pendingAiEdit = ref<{
+	originalFrom: number
+	originalTo: number
+	originalText: string
+	previewFrom: number
+	previewTo: number
+	generating: boolean
+} | null>(null)
+
+let allowPendingPreviewDocMutation = false
+let lastPendingPreviewWarnAt = 0
+
+function runWithPendingPreviewMutation<T>(fn: () => T): T {
+	allowPendingPreviewDocMutation = true
+	try {
+		return fn()
+	} finally {
+		allowPendingPreviewDocMutation = false
+	}
+}
+
+function ensureNoPendingAiEdit(): boolean {
+	if (pendingAiEdit.value) {
+		ElMessage.warning('请先接受或拒绝当前替换建议')
+		return false
+	}
+	return true
+}
+
 // 高亮管理
-const currentHighlight = ref<{ from: number; to: number } | null>(null)
+const currentHighlight = ref<{ from: number; to: number } | { mode: 'compare' } | null>(null)
 
 // 设置高亮
 function setHighlight(from: number, to: number) {
@@ -500,7 +549,7 @@ function setHighlight(from: number, to: number) {
 	}
 	currentHighlight.value = { from, to }
 	view.dispatch({
-		effects: setHighlightEffect.of({ from, to })
+		effects: setHighlightEffect.of({ mode: 'single', from, to })
 	})
 	console.log('✨ [Highlight] 设置高亮:', { from, to })
 }
@@ -524,7 +573,22 @@ function updateHighlight(from: number, to: number) {
 	}
 	currentHighlight.value = { from, to }
 	view.dispatch({
-		effects: setHighlightEffect.of({ from, to })
+		effects: setHighlightEffect.of({ mode: 'single', from, to })
+	})
+}
+
+function setCompareHighlight(originalFrom: number, originalTo: number, previewFrom: number, previewTo: number) {
+	if (!view) return
+	if (originalFrom >= originalTo || previewFrom >= previewTo) return
+	currentHighlight.value = { mode: 'compare' }
+	view.dispatch({
+		effects: setHighlightEffect.of({
+			mode: 'compare',
+			originalFrom,
+			originalTo,
+			previewFrom,
+			previewTo
+		})
 	})
 }
 
@@ -639,9 +703,20 @@ function initEditor() {
 					"&": { height: "100%" },
 					".cm-scroller": { overflow: "auto" }
 				}),
+				EditorState.transactionFilter.of((tr) => {
+					if (!tr.docChanged) return tr
+					if (!pendingAiEdit.value || allowPendingPreviewDocMutation) return tr
+					const now = Date.now()
+					if (now - lastPendingPreviewWarnAt > 1200) {
+						lastPendingPreviewWarnAt = now
+						ElMessage.warning('请先接受或拒绝当前替换建议')
+					}
+					return []
+				}),
 				// 点击编辑器时清除高亮
 				EditorView.domEventHandlers({
 					mousedown: (e, view) => {
+						if (pendingAiEdit.value) return false
 						if (currentHighlight.value) {
 							clearHighlight()
 							return false
@@ -884,6 +959,7 @@ function formatFactsFromContext(ctx: any | null | undefined): string {
 }
 
 async function executeAIContinuation() {
+	if (!ensureNoPendingAiEdit()) return
 	const llmConfigId = resolveLlmConfigId()
 	if (!llmConfigId) { ElMessage.error('请先设置有效的模型ID'); return }
 	const promptName = resolvePromptName()
@@ -914,18 +990,10 @@ async function executeAIContinuation() {
 	}
 
 	// 2. 格式化事实子图（参与实体）
-	let factsText = ''
-	try {
-		factsText = formatFactsFromContext(props.prefetched)
-	} catch {}
-
 	// 3. 组合完整的上下文信息
 	const contextParts: string[] = []
 	if (resolvedContextTemplate) {
 		contextParts.push(`【引用上下文】\n${resolvedContextTemplate}`)
-	}
-	if (factsText) {
-		contextParts.push(`【事实子图】\n${factsText}`)
 	}
 	const contextInfoBlock = contextParts.join('\n\n')
 
@@ -954,6 +1022,8 @@ async function executeAIContinuation() {
 		const autoParticipants = extractParticipantsForCurrentChapter()
 		if (autoParticipants.length) (requestData as any).participants = autoParticipants
 	} catch {}
+
+	applyContinuationScope(requestData)
 
 	if (view) { view.focus(); const end = view.state.doc.length; view.dispatch({ selection: { anchor: end } }) }
 
@@ -1060,18 +1130,26 @@ function closeContextMenu() {
 
 async function handleContextMenuPolish() {
 	const requirement = contextMenu.userRequirement.trim()
+	const selectedText = contextMenu.selectedText
 	closeContextMenu()
-	await executeAIEdit(currentPolishPrompt.value, requirement || undefined)
+	await executeAIEdit(currentPolishPrompt.value, requirement || undefined, selectedText || undefined)
 }
 
 async function handleContextMenuExpand() {
 	const requirement = contextMenu.userRequirement.trim()
+	const selectedText = contextMenu.selectedText
 	closeContextMenu()
-	await executeAIEdit(currentExpandPrompt.value, requirement || undefined)
+	await executeAIEdit(currentExpandPrompt.value, requirement || undefined, selectedText || undefined)
 }
 
-async function executeAIEdit(promptName: string, userRequirement?: string) {
-	const selectedText = getSelectedText()
+async function executeAIEdit(
+	promptName: string,
+	userRequirement?: string,
+	selectedTextInput?: { text: string; from: number; to: number }
+) {
+	if (!ensureNoPendingAiEdit()) return
+
+	const selectedText = selectedTextInput || getSelectedText()
 	if (!selectedText) {
 		ElMessage.warning(`请先选中要${promptName}的内容`)
 		return
@@ -1111,18 +1189,11 @@ async function executeAIEdit(promptName: string, userRequirement?: string) {
 	}
 
 	// 2. 格式化事实子图（参与实体）
-	let factsText = ''
-	try {
-		factsText = formatFactsFromContext(props.prefetched)
-	} catch {}
 
 	// 3. 组合上下文信息：引用上下文 + 事实子图 + 用户要求 + 上文 + 选中内容 + 下文
 	const contextParts: string[] = []
 	if (resolvedContextTemplate) {
 		contextParts.push(`【引用上下文】\n${resolvedContextTemplate}`)
-	}
-	if (factsText) {
-		contextParts.push(`【事实子图】\n${factsText}`)
 	}
 	if (userRequirement) {
 		contextParts.push(`【用户要求】\n${userRequirement}`)
@@ -1170,7 +1241,45 @@ async function executeAIEdit(promptName: string, userRequirement?: string) {
 		if (autoParticipants.length) (requestData as any).participants = autoParticipants
 	} catch {}
 
+	applyContinuationScope(requestData)
+
 	executeAIGeneration(requestData, true, promptName, selectedText.from, selectedText.to)
+}
+
+function acceptPendingAiEdit() {
+	if (!view || !pendingAiEdit.value) return
+	if (pendingAiEdit.value.generating) {
+		ElMessage.warning('正在生成中，请稍后')
+		return
+	}
+	const pending = pendingAiEdit.value
+	const previewText = view.state.doc.sliceString(pending.previewFrom, pending.previewTo)
+	runWithPendingPreviewMutation(() => {
+		view!.dispatch({
+			changes: { from: pending.originalFrom, to: pending.previewTo, insert: previewText },
+			selection: { anchor: pending.originalFrom + previewText.length }
+		})
+	})
+	pendingAiEdit.value = null
+	clearHighlight()
+	ElMessage.success('已接受替换')
+}
+
+function rejectPendingAiEdit() {
+	if (!view || !pendingAiEdit.value) return
+	if (pendingAiEdit.value.generating) {
+		interruptStream()
+	}
+	const pending = pendingAiEdit.value
+	runWithPendingPreviewMutation(() => {
+		view!.dispatch({
+			changes: { from: pending.previewFrom, to: pending.previewTo, insert: '' },
+			selection: { anchor: pending.originalTo }
+		})
+	})
+	pendingAiEdit.value = null
+	clearHighlight()
+	ElMessage.info('已拒绝替换，保留原文')
 }
 
 function executeAIGeneration(
@@ -1193,13 +1302,16 @@ function executeAIGeneration(
 			view.dispatch({ selection: { anchor: end } })
 			outputStartPos = end
 		} else if (replaceFrom !== undefined && replaceTo !== undefined) {
-			// 替换模式：先清空选中内容
-			view.dispatch({
-				changes: { from: replaceFrom, to: replaceTo, insert: '' },
-				selection: { anchor: replaceFrom }
-			})
-			outputStartPos = replaceFrom
-			// 不设置高亮，等第一个字符输出时再设置（避免空范围错误）
+			const originalText = view.state.doc.sliceString(replaceFrom, replaceTo)
+			outputStartPos = replaceTo
+			pendingAiEdit.value = {
+				originalFrom: replaceFrom,
+				originalTo: replaceTo,
+				originalText,
+				previewFrom: replaceTo,
+				previewTo: replaceTo,
+				generating: true
+			}
 		}
 	}
 
@@ -1217,16 +1329,28 @@ function executeAIGeneration(
 					.replace(/\n+/g, m => (m.length === 2 ? '\n' : m))
 				
 				if (replaceMode) {
-					// 替换模式：追加到当前光标位置（已清空选中内容）
+					// 替换模式：保留原文，在其后追加预览内容
 					if (view) {
-						const pos = view.state.selection.main.head
-						view.dispatch({
-							changes: { from: pos, to: pos, insert: normalized },
-							selection: { anchor: pos + normalized.length }
+						const pending = pendingAiEdit.value
+						const pos = pending ? pending.previewTo : view.state.selection.main.head
+						runWithPendingPreviewMutation(() => {
+							view!.dispatch({
+								changes: { from: pos, to: pos, insert: normalized },
+								selection: { anchor: pos + normalized.length }
+							})
 						})
 						currentOutputLength += normalized.length
-						// 动态更新高亮范围
-						updateHighlight(outputStartPos, outputStartPos + currentOutputLength)
+						if (pendingAiEdit.value) {
+							pendingAiEdit.value.previewTo = pos + normalized.length
+							setCompareHighlight(
+								pendingAiEdit.value.originalFrom,
+								pendingAiEdit.value.originalTo,
+								pendingAiEdit.value.previewFrom,
+								pendingAiEdit.value.previewTo
+							)
+						} else {
+							updateHighlight(outputStartPos, outputStartPos + currentOutputLength)
+						}
 					}
 				} else {
 					// 续写模式：追加到末尾
@@ -1241,6 +1365,9 @@ function executeAIGeneration(
 		() => {
 			aiLoading.value = false
 			streamHandle = null
+			if (replaceMode && pendingAiEdit.value) {
+				pendingAiEdit.value.generating = false
+			}
 			try {
 				if (!replaceMode) {
 					let text = getText() || ''
@@ -1250,11 +1377,28 @@ function executeAIGeneration(
 				}
 			} catch {}
 			console.log('✅ [AI] 生成完成，高亮已保留（点击编辑器任意位置可清除）')
-			ElMessage.success(`${taskName}完成！`)
+			if (replaceMode) {
+				ElMessage.success(`${taskName}完成，已生成替换建议`)
+			} else {
+				ElMessage.success(`${taskName}完成！`)
+			}
 		},
 		(error) => {
 			aiLoading.value = false
 			streamHandle = null
+			if (replaceMode && view && pendingAiEdit.value) {
+				runWithPendingPreviewMutation(() => {
+					view!.dispatch({
+						changes: {
+							from: pendingAiEdit.value!.previewFrom,
+							to: pendingAiEdit.value!.previewTo,
+							insert: ''
+						},
+						selection: { anchor: pendingAiEdit.value!.originalTo }
+					})
+				})
+				pendingAiEdit.value = null
+			}
 			clearHighlight()
 			console.error(`${taskName}失败:`, error)
 			ElMessage.error(`${taskName}失败`)
@@ -1264,6 +1408,28 @@ function executeAIGeneration(
 
 function interruptStream() {
 	try { streamHandle?.cancel(); } catch {}
+}
+
+function applyContinuationScope(requestData: ContinuationRequest) {
+	try {
+		const scopeProjectId =
+			(projectStore.currentProject?.id as number | undefined)
+			?? ((localCard as any)?.project_id as number | undefined)
+			?? ((props.card as any)?.project_id as number | undefined)
+			?? ((props.contextParams as any)?.project_id as number | undefined)
+
+		const scopeVolumeNumber =
+			((props.contextParams as any)?.volume_number as number | undefined)
+			?? ((localCard.content as any)?.volume_number as number | undefined)
+
+		const scopeChapterNumber =
+			((props.contextParams as any)?.chapter_number as number | undefined)
+			?? ((localCard.content as any)?.chapter_number as number | undefined)
+
+		if (Number.isFinite(scopeProjectId as number)) (requestData as any).project_id = scopeProjectId
+		if (Number.isFinite(scopeVolumeNumber as number)) (requestData as any).volume_number = scopeVolumeNumber
+		if (Number.isFinite(scopeChapterNumber as number)) (requestData as any).chapter_number = scopeChapterNumber
+	} catch {}
 }
 
 function extractParticipantsForCurrentChapter(): string[] {
@@ -1781,6 +1947,26 @@ defineExpose({
 	position: relative; 
 }
 
+.ai-replace-review-bar {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	gap: 12px;
+	padding: 8px 12px;
+	border-top: 1px solid var(--el-border-color-light);
+	background: var(--el-fill-color-lighter);
+}
+
+.review-hint {
+	font-size: 12px;
+	color: var(--el-text-color-secondary);
+}
+
+.review-actions {
+	display: flex;
+	gap: 8px;
+}
+
 /* CodeMirror 内部样式 */
 .editor-content :deep(.cm-editor) {
 	height: 100% !important; /* 强制占满容器高度，不自动扩展 */
@@ -1879,6 +2065,22 @@ defineExpose({
 	box-shadow: 0 0 0 1px rgba(96, 165, 250, 0.3);
 }
 
+.editor-content :deep(.cm-ai-original-highlight) {
+	background: rgba(148, 163, 184, 0.18);
+	color: rgba(100, 116, 139, 0.95);
+	border-radius: 2px;
+	padding: 2px 0;
+	box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.3);
+}
+
+.editor-content :deep(.cm-ai-preview-highlight) {
+	background: rgba(96, 165, 250, 0.18);
+	color: rgba(37, 99, 235, 0.98);
+	border-radius: 2px;
+	padding: 2px 0;
+	box-shadow: inset 0 0 0 1px rgba(96, 165, 250, 0.35);
+}
+
 @keyframes highlightPulse {
 	0%, 100% {
 		background-position: 0% 50%;
@@ -1896,5 +2098,17 @@ defineExpose({
 		rgba(59, 130, 246, 0.25) 100%);
 	background-size: 200% 100%;
 	box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.4);
+}
+
+.dark .editor-content :deep(.cm-ai-original-highlight) {
+	background: rgba(100, 116, 139, 0.26);
+	color: rgba(203, 213, 225, 0.95);
+	box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.45);
+}
+
+.dark .editor-content :deep(.cm-ai-preview-highlight) {
+	background: rgba(59, 130, 246, 0.24);
+	color: rgba(147, 197, 253, 0.98);
+	box-shadow: inset 0 0 0 1px rgba(96, 165, 250, 0.45);
 }
 </style>

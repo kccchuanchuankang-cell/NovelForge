@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Body
+﻿from fastapi import APIRouter, Depends, HTTPException, Body
 from sqlmodel import Session
 from app.db.session import get_session
 from app.schemas.ai import ContinuationRequest, ContinuationResponse, GeneralAIRequest
@@ -17,13 +17,12 @@ from app.utils.schema_utils import filter_schema_for_ai
 
 # 引入知识库
 from app.services.knowledge_service import KnowledgeService
-import re
 from app.schemas.entity import DYNAMIC_INFO_TYPES
 from app.schemas import entity as entity_schemas
 from app.core import emit_event
-from app.services.context_service import assemble_context, ContextAssembleParams
 from app.services.ai.core import llm_service
 from app.services.ai.core.model_builder import build_model_from_json_schema
+from app.services.ai.generation.continuation_context_service import enrich_continuation_context_info
 from app.services.ai.generation.instruction_validator import validate_instruction, apply_instruction
 from app.services.ai.generation.instruction_generator import generate_instruction_stream
 from app.services.ai.generation.prompt_builder import build_instruction_system_prompt
@@ -236,6 +235,10 @@ async def generate_continuation(
         # 注入知识库
         system_prompt = prompt_service.inject_knowledge(session, str(p.template))
 
+
+        request.context_info = enrich_continuation_context_info(session, request)
+        
+
         if request.stream:
             # 先做一次配额预检，避免流式过程中才抛错
             ok, reason = llm_config_service.can_consume(session, request.llm_config_id, 0, 0, 1)
@@ -307,7 +310,7 @@ async def generate_with_instruction_stream(
                 from loguru import logger
                 prompt = prompt_service.get_prompt_by_name(session, request.prompt_template)
                 if prompt and prompt.template:
-                    card_prompt_content = prompt.template
+                    card_prompt_content = prompt_service.inject_knowledge(session, str(prompt.template))
                     logger.info(f"[卡片生成] 加载提示词模板: {request.prompt_template}, 长度: {len(card_prompt_content)}")
                 else:
                     logger.warning(f"[卡片生成] 未找到提示词模板: {request.prompt_template}")
