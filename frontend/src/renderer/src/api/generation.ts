@@ -43,7 +43,8 @@ export async function generateWithInstructionStream(
     const response = await fetch(url, {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${localStorage.getItem('novelforge_token')}`
       },
       body: JSON.stringify(params),
       signal

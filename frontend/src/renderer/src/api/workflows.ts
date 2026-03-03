@@ -159,13 +159,14 @@ export async function runCodeWorkflowStream(
   runId?: number
 ): Promise<{ runId: { value: number }; eventSource: EventSource }> {
   console.log('[API] 开始执行工作流:', workflowId, 'resume:', resume, 'runId:', runId)
-  
+
   // 构建 URL
-  let url = `${API_BASE_URL}/workflows/${workflowId}/execute-stream`
+  const token = localStorage.getItem('novelforge_token')
+  let url = `${API_BASE_URL}/workflows/${workflowId}/execute-stream?token=${token}`
   if (resume && runId) {
-    url += `?resume=true&run_id=${runId}`
+    url += `&resume=true&run_id=${runId}`
   }
-  
+
   console.log('[API] 连接 SSE:', url)
 
   // EventSource 不支持 AbortController，直接使用 close() 方法中断
@@ -181,7 +182,7 @@ export async function runCodeWorkflowStream(
     try {
       const data = JSON.parse(event.data)
       console.log('[API] 收到消息:', data)
-      
+
       // 处理不同类型的事件
       switch (data.type) {
         case 'run_started':
@@ -191,34 +192,34 @@ export async function runCodeWorkflowStream(
           // 调用回调
           callbacks.onRunStarted?.(runIdRef.value)
           break
-          
+
         case 'start':
           callbacks.onStart?.(data as StartEvent)
           break
-          
+
         case 'progress':
           callbacks.onProgress?.(data as ProgressEvent)
           break
-          
+
         case 'complete':
           callbacks.onComplete?.(data as CompleteEvent)
           break
-          
+
         case 'error':
           callbacks.onError?.(data as ErrorEvent)
           break
-          
+
         case 'paused':
           console.log('[API] 工作流已暂停')
           callbacks.onEnd?.()
           eventSource.close()
           break
-          
+
         case 'end':
           callbacks.onEnd?.()
           eventSource.close()
           break
-          
+
         default:
           console.warn('[API] 未知事件类型:', data.type)
       }
@@ -229,17 +230,17 @@ export async function runCodeWorkflowStream(
 
   eventSource.onerror = (error) => {
     console.error('[API] SSE 错误:', error)
-    
+
     // 检查 readyState 判断是否是正常关闭
     if (eventSource.readyState === EventSource.CLOSED) {
       console.log('[API] SSE 连接已关闭（可能是暂停或完成）')
       // 不调用 onError，避免误报错误
       return
     }
-    
+
     // 立即关闭连接，防止自动重连
     eventSource.close()
-    
+
     callbacks.onError?.({
       type: 'error',
       statement: { variable: 'unknown', code: 'unknown' },

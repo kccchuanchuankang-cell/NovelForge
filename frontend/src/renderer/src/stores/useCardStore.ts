@@ -92,16 +92,16 @@ export const useCardStore = defineStore('card', () => {
 
   async function fetchInitialData() {
     await Promise.all([
-        fetchCardTypes(),
-        fetchAvailableModels()
+      fetchCardTypes(),
+      fetchAvailableModels()
     ]);
   }
 
   // Card Actions
   async function fetchCards(projectId: number) {
     if (!projectId) {
-        cards.value = []
-        return
+      cards.value = []
+      return
     }
     isLoading.value = true
     try {
@@ -167,14 +167,18 @@ export const useCardStore = defineStore('card', () => {
         const start = Date.now()
         while (Date.now() - start < maxSecs * 1000) {
           try {
-            const resp = await fetch(`${BASE_URL}/api/workflows/runs/${runId}`, { method: 'GET' })
+            const token = localStorage.getItem('novelforge_token')
+            const resp = await fetch(`${BASE_URL}/api/workflows/runs/${runId}`, {
+              method: 'GET',
+              headers: { 'Authorization': `Bearer ${token}` }
+            })
             const json = await resp.json()
             const st = json?.status
             if (st === 'succeeded' || st === 'failed' || st === 'cancelled') {
               if (currentProject.value?.id) await fetchCards(currentProject.value.id)
               return
             }
-          } catch (e) { 
+          } catch (e) {
             console.error('[Workflow] 轮询异常:', e)
           }
           await new Promise(r => setTimeout(r, 1000))
@@ -184,7 +188,8 @@ export const useCardStore = defineStore('card', () => {
       if (runIds.length && currentProject.value?.id) {
         for (const rid of runIds) {
           try {
-            const es = new EventSource(`${BASE_URL}/api/workflows/runs/${rid}/events`)
+            const token = localStorage.getItem('novelforge_token')
+            const es = new EventSource(`${BASE_URL}/api/workflows/runs/${rid}/events?token=${token}`)
             let finished = false
             es.addEventListener('run_completed', async (evt: MessageEvent) => {
               finished = true
@@ -195,7 +200,11 @@ export const useCardStore = defineStore('card', () => {
                   // 精准刷新：按受影响卡片拉取详情并合并到本地
                   for (const cid of affected) {
                     try {
-                      const resp = await fetch(`${BASE_URL}/api/cards/${cid}`, { method: 'GET' })
+                      const token = localStorage.getItem('novelforge_token')
+                      const resp = await fetch(`${BASE_URL}/api/cards/${cid}`, {
+                        method: 'GET',
+                        headers: { 'Authorization': `Bearer ${token}` }
+                      })
                       if (resp.ok) {
                         const updated = await resp.json()
                         const i = cards.value.findIndex(c => c.id === cid)
@@ -207,7 +216,7 @@ export const useCardStore = defineStore('card', () => {
                           if (currentProject.value?.id) await fetchCards(currentProject.value.id)
                         }
                       }
-                    } catch (e) { 
+                    } catch (e) {
                       console.error('[Workflow] 刷新受影响卡片失败:', cid, e)
                     }
                   }
@@ -253,7 +262,7 @@ export const useCardStore = defineStore('card', () => {
       console.error(error)
     }
   }
-  
+
   // Available Models Actions
   async function fetchAvailableModels() {
     try {
